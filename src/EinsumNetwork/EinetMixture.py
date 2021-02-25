@@ -7,7 +7,7 @@ from EinsumNetwork.EinsumNetwork import log_likelihoods
 class EinetMixture:
     """A simple class for mixtures of Einets, implemented in numpy."""
 
-    def __init__(self, p, einets):
+    def __init__(self, p, einets, classes=None):
 
         if len(p) != len(einets):
             raise AssertionError("p and einets must have the same length.")
@@ -16,6 +16,7 @@ class EinetMixture:
 
         self.p = p
         self.einets = einets
+        self.classes = classes
 
         num_var = set([e.args.num_var for e in einets])
         if len(num_var) != 1:
@@ -78,3 +79,17 @@ class EinetMixture:
                 lls = torch.logsumexp(lls, dim=1)
                 ll_total += lls.sum().item()
             return ll_total
+
+    def classify_samples(self, samples):
+        predicted_labels = []
+        for sample in samples:
+            max_ll = float('-inf')
+            predicted_label = None
+            for (einet, c) in zip(self.einets, self.classes):
+                einet.eval()
+                outputs = einet.forward(sample[None, :])
+                ll_sample = log_likelihoods(outputs)
+                if ll_sample.sum() > max_ll:
+                    predicted_label = c
+            predicted_labels.append(predicted_label)
+        return predicted_labels
