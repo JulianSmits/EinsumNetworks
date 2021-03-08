@@ -266,7 +266,7 @@ def log_likelihoods(outputs, labels=None):
     return lls
 
 
-def eval_accuracy_batched(einet, x, labels, batch_size):
+def eval_accuracy_batched(einet, classes, x, labels, batch_size):
     """Computes accuracy in batched way."""
     with torch.no_grad():
         idx_batches = torch.arange(0, x.shape[0], dtype=torch.int64, device=x.device).split(batch_size)
@@ -276,7 +276,8 @@ def eval_accuracy_batched(einet, x, labels, batch_size):
             batch_labels = labels[idx]
             outputs = einet.forward(batch_x)
             _, pred = outputs.max(1)
-            n_correct += torch.sum(pred == batch_labels)
+            batch_labels_idx = torch.tensor([classes.index(labels[i]) for i in idx]).to(torch.device(x.device))
+            n_correct += torch.sum(pred == batch_labels_idx)
         return (n_correct.float() / x.shape[0]).item()
 
 
