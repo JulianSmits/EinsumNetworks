@@ -2,19 +2,22 @@ import torch
 import numpy as np
 from scipy.special import logsumexp
 from EinsumNetwork.EinsumNetwork import log_likelihoods
+softmax = torch.nn.functional.softmax
 
 
-class EinetMixture:
+class EinetMixture(torch.nn.Module):
     """A simple class for mixtures of Einets, implemented in numpy."""
 
     def __init__(self, p, einets, classes=None):
+        super(EinetMixture, self).__init__()
 
         if len(p) != len(einets):
             raise AssertionError("p and einets must have the same length.")
 
         self.num_components = len(p)
 
-        self.p = p
+        self.params = torch.nn.Parameter(p)
+        self.p = p.cpu().tolist()
         self.einets = einets
         self.classes = classes
 
@@ -27,6 +30,8 @@ class EinetMixture:
         if len(num_dims) != 1:
             raise AssertionError("all EiNet components must have the same num_dims.")
         self.num_dims = list(num_dims)[0]
+
+        self.reparam = self.reparam_function()
 
     def sample(self, N, **kwargs):
         samples = np.zeros((N, self.num_var, self.num_dims))
@@ -60,10 +65,12 @@ class EinetMixture:
 
         return samples
 
-    def log_likelihood(self, x, labels=None, batch_size=100):
+    def log_likelihood(self, x, labels=None, batch_size=100, add_child_lls=False):
+        """Compute the likelihood of the EinetMixture."""
         with torch.no_grad():
             idx_batches = torch.arange(0, x.shape[0], dtype=torch.int64, device=x.device).split(batch_size)
             ll_total = 0.0
+            child_lls = []
             for batch_count, idx in enumerate(idx_batches):
                 batch_x = x[idx, :]
                 if labels is not None:
@@ -74,22 +81,66 @@ class EinetMixture:
                 lls = torch.zeros(len(idx), self.num_components, device=x.device)
                 for einet_count, einet in enumerate(self.einets):
                     outputs = einet(batch_x)
-                    lls[:, einet_count] = log_likelihoods(outputs, labels=batch_labels).squeeze()
-                    lls[:, einet_count] -= torch.log(torch.tensor(self.p[einet_count]))
+                    ll_child = log_likelihoods(outputs, labels=batch_labels).squeeze() - torch.log(self.params[einet_count])
+                    lls[:, einet_count] = ll_child
+                    child_lls.append(ll_child)
                 lls = torch.logsumexp(lls, dim=1)
                 ll_total += lls.sum().item()
+            if add_child_lls:
+                return (ll_total, child_lls)
             return ll_total
 
     def classify_samples(self, samples):
-        predicted_labels = []
-        for sample in samples:
-            max_ll = float('-inf')
-            predicted_label = None
-            for (einet, c) in zip(self.einets, self.classes):
-                einet.eval()
-                outputs = einet.forward(sample[None, :])
-                ll_sample = log_likelihoods(outputs)
-                if ll_sample.sum() > max_ll:
-                    predicted_label = c
-            predicted_labels.append(predicted_label)
-        return predicted_labels
+        with torch.no_grad():
+            predicted_labels = []
+            for sample in samples:
+                max_prob = float('-inf')
+                predicted_label = None
+                ll_mixture, child_lls = self.log_likelihood(sample[None, :], add_child_lls=True) 
+                for (ll_sample, c, p) in zip(child_lls, self.classes, self.params.cpu().tolist()):
+                    if np.log(p) + ll_sample - ll_mixture > max_prob:
+                        max_prob = np.log(p) + ll_sample - ll_mixture
+                        predicted_label = c
+                predicted_labels.append(predicted_label)
+            return predicted_labels
+
+    def eval_accuracy_batched(self, classes, x, labels, batch_size=100):
+        """Computes accuracy in batched way."""
+        with torch.no_grad():
+            idx_batches = torch.arange(0, x.shape[0], dtype=torch.int64, device=x.device).split(batch_size)
+            n_correct = 0
+            for batch_count, idx in enumerate(idx_batches):
+                batch_x = x[idx, :]
+                batch_labels = labels[idx]
+                outputs = self.forward(batch_x)
+                _, pred = outputs.max(1)
+                batch_labels_idx = torch.tensor([classes.index(labels[i]) for i in idx]).to(torch.device(x.device))
+                n_correct += torch.sum(pred == batch_labels_idx)
+            return (n_correct.float() / x.shape[0]).item()
+
+    def forward(self, x):
+        reparam = self.reparam(self.params)
+        params = reparam
+        return self._forward(x, params)
+
+
+    def _forward(self, x, params):
+        """
+        EinetMixture forward pass.
+        """
+        lls = torch.zeros(x.shape[0], self.num_components, device=x.device)
+        for einet_count, einet in enumerate(self.einets):
+            outputs = einet(x)
+            lls[:, einet_count] = log_likelihoods(outputs).squeeze()
+            lls[:, einet_count] -= torch.log(params[einet_count])
+        return lls
+
+    def reparam_function(self):
+        """
+        Reparametrization function, transforming unconstrained parameters into valid sum-weight
+        (non-negative, normalized).
+        """
+        def reparam(params_in):
+            out = softmax(params_in, 0)
+            return out
+        return reparam
