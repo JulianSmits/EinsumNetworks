@@ -25,6 +25,7 @@ exponential_family = EinsumNetwork.BinomialArray
 # exponential_family = EinsumNetwork.CategoricalArray
 # exponential_family = EinsumNetwork.NormalArray
 
+# classes = [7]
 classes = [2, 4]
 # classes = [2, 3, 5, 7]
 # classes = None
@@ -45,10 +46,16 @@ height = 28
 depth = 3
 num_repetitions = 20
 
-num_epochs = 20
+num_epochs = 5
 batch_size = 100
 online_em_frequency = 1
 online_em_stepsize = 0.05
+
+train_discriminatively = True
+SGD_learning_rate = 0.1
+
+
+classify_full_test_set = True
 
 use_custom_initializer = False
 ############################################################################
@@ -88,13 +95,18 @@ if classes is not None:
     valid_labels = [l for l in valid_labels if l in classes]
     test_labels = [l for l in test_labels if l in classes]
 else:
-    classes = np.unique(train_labels)
+    classes = np.unique(train_labels).tolist()
+
+    train_labels = [l for l in train_labels if l in classes]
+    valid_labels = [l for l in valid_labels if l in classes]
+    test_labels = [l for l in test_labels if l in classes]
 
 train_x = torch.from_numpy(train_x).to(torch.device(device))
 valid_x = torch.from_numpy(valid_x).to(torch.device(device))
 test_x = torch.from_numpy(test_x).to(torch.device(device))
 
-# Make EinsumNetworks for each class
+######################################
+# Make EinsumNetworks for each class #
 ######################################
 def custom_initializer(layer, train_x):
     """
@@ -134,9 +146,8 @@ def custom_initializer(layer, train_x):
         params.data = params.data / (params.data.sum(layer.normalization_dims, keepdim=True))
     return params
 
-
 einets = []
-p = []
+ps = []
 for c in classes:
     if structure == 'poon-domingos':
         pd_delta = [[height / d, width / d] for d in pd_num_pieces]
@@ -154,6 +165,7 @@ for c in classes:
             num_input_distributions=K,
             exponential_family=exponential_family,
             exponential_family_args=exponential_family_args,
+            use_em=not train_discriminatively,
             online_em_frequency=online_em_frequency,
             online_em_stepsize=online_em_stepsize)
 
@@ -167,119 +179,132 @@ for c in classes:
 
     einet.initialize(init_dict)
     einet.to(device)
-    print(einet)
     einets.append(einet)
 
-# Train
-######################################
+    # Calculate amount of training samples per class
+    ps.append(train_labels.count(c))
 
-for (einet, c) in zip(einets, classes):
-  train_x_c = train_x[[l == c for l in train_labels]]
-  valid_x_c = valid_x[[l == c for l in valid_labels]]
-  test_x_c = test_x[[l == c for l in test_labels]]
+    print(f'Einsum network for class {c}:')
+    print(einet)
 
-  train_N = train_x_c.shape[0]
-  valid_N = valid_x_c.shape[0]
-  test_N = test_x_c.shape[0]
+# normalize ps, construct mixture component
+ps = [p / sum(ps) for p in ps]
+ps = torch.tensor(ps).to(torch.device(device))
+mixture = EinetMixture(ps, einets, classes=classes)
 
-  p.append(train_N)
 
-  for epoch_count in range(num_epochs):
+##################
+# Training phase #
+##################
 
-      ##### evaluate
-      einet.eval()
-      train_ll = EinsumNetwork.eval_loglikelihood_batched(einet, train_x_c, batch_size=batch_size)
-      valid_ll = EinsumNetwork.eval_loglikelihood_batched(einet, valid_x_c, batch_size=batch_size)
-      test_ll = EinsumNetwork.eval_loglikelihood_batched(einet, test_x_c, batch_size=batch_size)
-      print("[{}]   train LL {}   valid LL {}   test LL {}".format(
-          epoch_count,
-          train_ll / train_N,
-          valid_ll / valid_N,
-          test_ll / test_N))
-      einet.train()
-      #####
+if train_discriminatively:
+    """ Train the EinetMixture discriminatively """
 
-      idx_batches = torch.randperm(train_N, device=device).split(batch_size)
+    sub_net_parameters = None
+    for einet in mixture.einets:
+        if sub_net_parameters is None:
+           sub_net_parameters = list(einet.parameters())
+        else:
+            sub_net_parameters += list(einet.parameters())
+    sub_net_parameters += list(mixture.parameters())
 
-      total_ll = 0.0
-      for idx in idx_batches:
-          batch_x = train_x_c[idx, :]
-          outputs = einet.forward(batch_x)
-          ll_sample = EinsumNetwork.log_likelihoods(outputs)
-          log_likelihood = ll_sample.sum()
-          log_likelihood.backward()
+    optimizer = torch.optim.SGD(sub_net_parameters, lr=SGD_learning_rate)
+    # loss_function = torch.nn.CrossEntropyLoss(ps)
+    loss_function = torch.nn.CrossEntropyLoss()
 
-          einet.em_process_batch()
-          total_ll += log_likelihood.detach().item()
+    train_N = train_x.shape[0]
+    valid_N = valid_x.shape[0]
+    test_N = test_x.shape[0]
 
-      einet.em_update()
+    for epoch_count in range(num_epochs):
+        idx_batches = torch.randperm(train_N, device=device).split(batch_size)
 
-if fashion_mnist:
-    model_dir = '../models/einet/demo_fashion_mnist/'
-    samples_dir = '../samples/demo_fashion_mnist/'
+        total_loss = 0
+        for idx in idx_batches:
+            batch_x = train_x[idx, :]
+            optimizer.zero_grad()
+            outputs = mixture.forward(batch_x)
+            target = torch.tensor([classes.index(train_labels[i]) for i in idx]).to(torch.device(device))
+            loss = loss_function(outputs, target)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.detach().item()
+
+        print(f'[{epoch_count}]   total loss: {total_loss}')
+
 else:
-    model_dir = '../models/einet/demo_mnist/'
-    samples_dir = '../samples/demo_mnist/'
-utils.mkdir_p(model_dir)
-utils.mkdir_p(samples_dir)
+    """ Learning each sub Network Generatively """
+    for (einet, c) in zip(einets, classes):
+        train_x_c = train_x[[l == c for l in train_labels]]
+        valid_x_c = valid_x[[l == c for l in valid_labels]]
+        test_x_c = test_x[[l == c for l in test_labels]]
+
+        train_N = train_x_c.shape[0]
+        valid_N = valid_x_c.shape[0]
+        test_N = test_x_c.shape[0]  
+
+        for epoch_count in range(num_epochs):
+
+            ##### evaluate
+            einet.eval()
+            train_ll = EinsumNetwork.eval_loglikelihood_batched(einet, train_x_c, batch_size=batch_size)
+            valid_ll = EinsumNetwork.eval_loglikelihood_batched(einet, valid_x_c, batch_size=batch_size)
+            test_ll = EinsumNetwork.eval_loglikelihood_batched(einet, test_x_c, batch_size=batch_size)
+            print("[{}]   train LL {}   valid LL {}   test LL {}".format(
+                epoch_count,
+                train_ll / train_N,
+                valid_ll / valid_N,
+                test_ll / test_N))
+            einet.train()
+            #####
+
+            idx_batches = torch.randperm(train_N, device=device).split(batch_size)
+
+            total_ll = 0.0
+            for idx in idx_batches:
+                batch_x = train_x_c[idx, :]
+                outputs = einet.forward(batch_x)
+                ll_sample = EinsumNetwork.log_likelihoods(outputs)
+                log_likelihood = ll_sample.sum()
+                log_likelihood.backward()
+                
+                einet.em_process_batch()
+                total_ll += log_likelihood.detach().item()
+                
+
+            einet.em_update()
 
 
-################################################
-# construct EinetMixture and do classification #
-################################################
+##########################
+# Execute classification #
+##########################
 
 print("-------- classification ----------")
 
-mixture = EinetMixture(p, einets, classes=classes)
+if classify_full_test_set:
+    samples = test_x
+else:
+    # sample_idx = [20]
+    sample_idx = [0, 10, 20, 30]
+    samples = test_x[sample_idx]
 
-sample_idx = [0, 10, 20, 30]
-samples = test_x[sample_idx]
+corr_c = 0
+total_c = 0
 
-correct_labels = [test_labels[i] for i in sample_idx]
+if classify_full_test_set:
+    correct_labels = test_labels
+else:
+    correct_labels = [test_labels[i] for i in sample_idx]
 predictions = mixture.classify_samples(samples)
 
-for (i, c, p) in zip(sample_idx, correct_labels, predictions):
-    print(f'test index {i}: correct label = {c}, predicted label = {p}')
+for i, (c, p) in enumerate(zip(correct_labels, predictions)):
+    if int(c) == int(p):
+        corr_c += 1
+    total_c += 1
+    if not classify_full_test_set:
+        print(f'test index {sample_idx[i]}: correct label = {c}, predicted label = {p}')
 
-for (einet, c) in zip(einets, classes):
-    samples = einet.sample(num_samples=25).cpu().numpy()
-    samples = samples.reshape((-1, 28, 28))
-    utils.save_image_stack(samples, 5, 5, os.path.join(samples_dir, f"samples{c}.png"), margin_gray_val=0.)
-
-####################
-# save and re-load #
-####################
-
-# # evaluate log-likelihoods
-# einet.eval()
-# train_ll_before = EinsumNetwork.eval_loglikelihood_batched(einet, train_x, batch_size=batch_size)
-# valid_ll_before = EinsumNetwork.eval_loglikelihood_batched(einet, valid_x, batch_size=batch_size)
-# test_ll_before = EinsumNetwork.eval_loglikelihood_batched(einet, test_x, batch_size=batch_size)
-
-# # save model
-# graph_file = os.path.join(model_dir, "einet.pc")
-# Graph.write_gpickle(graph, graph_file)
-# print("Saved PC graph to {}".format(graph_file))
-# model_file = os.path.join(model_dir, "einet.mdl")
-# torch.save(einet, model_file)
-# print("Saved model to {}".format(model_file))
-
-# del einet
-
-# # reload model
-# einet = torch.load(model_file)
-# print("Loaded model from {}".format(model_file))
-
-# # evaluate log-likelihoods on re-loaded model
-# train_ll = EinsumNetwork.eval_loglikelihood_batched(einet, train_x, batch_size=batch_size)
-# valid_ll = EinsumNetwork.eval_loglikelihood_batched(einet, valid_x, batch_size=batch_size)
-# test_ll = EinsumNetwork.eval_loglikelihood_batched(einet, test_x, batch_size=batch_size)
-# print()
-# print("Log-likelihoods before saving --- train LL {}   valid LL {}   test LL {}".format(
-#         train_ll / train_N,
-#         valid_ll / valid_N,
-#         test_ll / test_N))
-# print("Log-likelihoods after saving  --- train LL {}   valid LL {}   test LL {}".format(
-#         train_ll / train_N,
-#         valid_ll / valid_N,
-#         test_ll / test_N))
+if classify_full_test_set:
+    print(f'correct classified: {corr_c}')
+    print(f'total samples: {total_c}')
+    print(f'accuracy: {corr_c/total_c}')
