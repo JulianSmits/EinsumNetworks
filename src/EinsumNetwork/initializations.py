@@ -17,7 +17,7 @@ def get_init_dict(einet, train_x, train_labels=None, einet_class=None):
 
     # filter training samples when needed
     if einet_class is not None and train_labels is not None:
-        train_x = train_x[[l == c for l in train_labels]]
+        train_x = train_x[[l == einet_class for l in train_labels]]
 
 
     # specify init_func based on settings

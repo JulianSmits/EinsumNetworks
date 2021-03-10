@@ -30,6 +30,7 @@ print(demo_text)
 
 ############################################################################
 fashion_mnist = False
+svhn = True
 
 exponential_family = EinsumNetwork.BinomialArray
 # exponential_family = EinsumNetwork.CategoricalArray
@@ -49,8 +50,12 @@ structure = 'poon-domingos'
 pd_num_pieces = [4]
 # pd_num_pieces = [7]
 # pd_num_pieces = [7, 28]
+
 width = 28
 height = 28
+if svhn:
+    width = 32
+    height = 32
 
 # 'binary-trees'
 depth = 3
@@ -73,6 +78,8 @@ if exponential_family == EinsumNetwork.NormalArray:
 # get data
 if fashion_mnist:
     train_x, train_labels, test_x, test_labels = datasets.load_fashion_mnist()
+elif svhn:
+    train_x, train_labels, test_x, test_labels, extra_x, extra_labels = datasets.load_svhn()
 else:
     train_x, train_labels, test_x, test_labels = datasets.load_mnist()
 
@@ -87,6 +94,7 @@ valid_x = train_x[-10000:, :]
 train_x = train_x[:-10000, :]
 valid_labels = train_labels[-10000:]
 train_labels = train_labels[:-10000]
+
 # pick the selected classes
 if classes is not None:
     train_x = train_x[np.any(np.stack([train_labels == c for c in classes], 1), 1), :]
@@ -123,7 +131,7 @@ for c in classes:
 
     args = EinsumNetwork.Args(
             num_var=train_x.shape[1],
-            num_dims=1,
+            num_dims=3 if svhn else 1,
             num_classes=1,
             num_sums=K,
             num_input_distributions=K,
