@@ -4,6 +4,7 @@ import torch
 from EinsumNetwork import Graph, EinsumNetwork, FactorizedLeafLayer
 from EinsumNetwork.initializations import get_init_dict
 from EinsumNetwork.EinetMixture import EinetMixture
+from experiments.round1 import Settings
 import datasets
 import utils
 import time
@@ -27,41 +28,32 @@ A single Einet is learned by executing a SGD algorithm with an Cross Entropy obj
 print(demo_text)
 
 ############################################################################
-fashion_mnist = False
-svhn = True
+settings = Settings.Settings()
 
-exponential_family = EinsumNetwork.BinomialArray
-# exponential_family = EinsumNetwork.CategoricalArray
-# exponential_family = EinsumNetwork.NormalArray
+fashion_mnist = settings.fashion_mnist
+svhn = settings.svhn
 
-# classes = [7]
-classes = [2, 4]
-# classes = [2, 3, 5, 7]
-# classes = None
+exponential_family = settings.exponential_family
 
-K = 10
+classes = settings.classes
 
-structure = 'poon-domingos'
-# structure = 'binary-trees'
+K = settings.K
+
+structure =  settings.structure
 
 # 'poon-domingos'
-pd_num_pieces = [4]
-# pd_num_pieces = [7]
-# pd_num_pieces = [7, 28]
-
-width = 28
-height = 28
-if svhn:
-    width = 32
-    height = 32
+pd_num_pieces = settings.pd_num_pieces
 
 # 'binary-trees'
-depth = 3
-num_repetitions = 20
+depth = settings.depth
+num_repetitions = settings.num_repetitions
 
-num_epochs = 5
-batch_size = 100
-SGD_learning_rate = 0.1
+width = settings.width
+height = settings.height
+
+num_epochs = settings.num_epochs
+batch_size = settings.batch_size
+SGD_learning_rate = settings.SGD_learning_rate
 
 ############################################################################
 
@@ -140,6 +132,7 @@ einet.initialize(init_dict)
 einet.to(device)
 print(einet)
 
+num_params = EinsumNetwork.eval_size(einet)
 
 #################################
 # Discriminative training phase #
@@ -202,4 +195,5 @@ print("Experiment 6: Classification accuracies  --- train acc {}   valid acc {} 
         acc_test))
 
 print()
+print(f'Network size: {num_params} parameters')
 print(f'Training time: {end_time - start_time}s')

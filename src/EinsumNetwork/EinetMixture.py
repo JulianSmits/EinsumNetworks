@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from scipy.special import logsumexp
-from EinsumNetwork.EinsumNetwork import log_likelihoods
+from EinsumNetwork.EinsumNetwork import log_likelihoods, eval_size
 softmax = torch.nn.functional.softmax
 
 
@@ -117,6 +117,13 @@ class EinetMixture(torch.nn.Module):
                 batch_labels_idx = torch.tensor([classes.index(labels[i]) for i in idx]).to(torch.device(x.device))
                 n_correct += torch.sum(pred == batch_labels_idx)
             return (n_correct.float() / x.shape[0]).item()
+
+    def eval_size(self):
+        total_params = 0
+        for einet in self.einets:
+            total_params += eval_size(einet)
+        total_params += len(self.p)
+        return total_params
 
     def forward(self, x):
         reparam = self.reparam(self.params)

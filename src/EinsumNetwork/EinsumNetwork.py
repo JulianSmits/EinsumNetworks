@@ -296,3 +296,13 @@ def eval_loglikelihood_batched(einet, x, labels=None, batch_size=100):
             ll_sample = log_likelihoods(outputs, batch_labels)
             ll_total += ll_sample.sum().item()
         return ll_total
+
+def eval_size(einet):
+    total_params = 0
+    for layer in einet.einet_layers:
+        if isinstance(layer, FactorizedLeafLayer):
+            ef_array = layer.ef_array
+            total_params += ef_array.num_var * torch.prod(torch.tensor(ef_array.array_shape)).item() * ef_array.num_dims
+        else:
+            total_params += torch.prod(torch.tensor(layer.params_shape)).item()
+    return total_params
