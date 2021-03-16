@@ -65,46 +65,23 @@ class EinetMixture(torch.nn.Module):
 
         return samples
 
-    def log_likelihood(self, x, labels=None, batch_size=100, add_child_lls=False):
-        """Compute the likelihood of the EinetMixture."""
+    def eval_loglikelihood_batched(self, x, labels=None, batch_size=100):
+        """Computes log-likelihood in batched way."""
         with torch.no_grad():
             idx_batches = torch.arange(0, x.shape[0], dtype=torch.int64, device=x.device).split(batch_size)
             ll_total = 0.0
-            child_lls = []
             for batch_count, idx in enumerate(idx_batches):
                 batch_x = x[idx, :]
                 if labels is not None:
                     batch_labels = labels[idx]
                 else:
                     batch_labels = None
+                outputs = self(batch_x)
+                ll_sample = log_likelihoods(outputs, batch_labels)
+                ll_total += ll_sample.sum().item()
+            return ll_total                
 
-                lls = torch.zeros(len(idx), self.num_components, device=x.device)
-                for einet_count, einet in enumerate(self.einets):
-                    outputs = einet(batch_x)
-                    ll_child = log_likelihoods(outputs, labels=batch_labels).squeeze() - torch.log(self.params[einet_count])
-                    lls[:, einet_count] = ll_child
-                    child_lls.append(ll_child)
-                lls = torch.logsumexp(lls, dim=1)
-                ll_total += lls.sum().item()
-            if add_child_lls:
-                return (ll_total, child_lls)
-            return ll_total
-
-    def classify_samples(self, samples):
-        with torch.no_grad():
-            predicted_labels = []
-            for sample in samples:
-                max_prob = float('-inf')
-                predicted_label = None
-                ll_mixture, child_lls = self.log_likelihood(sample[None, :], add_child_lls=True) 
-                for (ll_sample, c, p) in zip(child_lls, self.classes, self.params.cpu().tolist()):
-                    if np.log(p) + ll_sample - ll_mixture > max_prob:
-                        max_prob = np.log(p) + ll_sample - ll_mixture
-                        predicted_label = c
-                predicted_labels.append(predicted_label)
-            return predicted_labels
-
-    def eval_accuracy_batched(self, classes, x, labels, batch_size=100):
+    def eval_accuracy_batched(self, classes, x, labels=None, batch_size=100):
         """Computes accuracy in batched way."""
         with torch.no_grad():
             idx_batches = torch.arange(0, x.shape[0], dtype=torch.int64, device=x.device).split(batch_size)

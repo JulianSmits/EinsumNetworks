@@ -1,4 +1,6 @@
 import sys
+import os
+import json
 
 if len(sys.argv) > 1:
 
@@ -13,7 +15,8 @@ if len(sys.argv) > 1:
 
 else:
 
-  from experiments.round1 import experiment_1_2
+  # from experiments.round1 import experiment_1_2
   # from experiments.round1 import experiment_3_4
   # from experiments.round1 import experiment_5_6
   # from experiments.round1 import experiment_7_8
+  from experiments.round1 import plot_experiment
